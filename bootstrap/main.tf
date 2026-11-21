@@ -90,6 +90,8 @@ resource "aws_iam_role_policy" "ci" {
         Resource  = "arn:aws:iam::${local.account}:role/eks-platform-*"
         Condition = { ArnEquals = { "iam:PolicyARN" = local.allowed_policies } }
       },
+      # EKS checks its own service-linked roles (for example AWSServiceRoleForAmazonEKSNodegroup) exist before creating node groups
+      { Sid = "ReadServiceLinkedRoles", Effect = "Allow", Action = "iam:GetRole", Resource = "arn:aws:iam::${local.account}:role/aws-service-role/*" },
       { Sid = "ReadPolicies", Effect = "Allow", Action = ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:GetOpenIDConnectProvider", "iam:ListOpenIDConnectProviders"], Resource = "*" },
       {
         Sid       = "ServiceLinkedRoles"

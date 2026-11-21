@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 60
     defaults:
       run:
+        shell: bash   # bash -eo pipefail: a failing terraform apply fails its step even when piped into tail
         working-directory: terraform
     steps:
       - name: Checkout
