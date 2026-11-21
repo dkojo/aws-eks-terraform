@@ -1,0 +1,100 @@
+name: platform
+
+# Pull requests: validate and plan only (nothing is created).
+# main: build the platform layer by layer, verify it end to end, then destroy it. About 30 minutes and $0.20 a run.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # OIDC sign-in to AWS, no stored keys
+
+concurrency:
+  group: eks-platform
+  cancel-in-progress: false   # never cancel a run halfway through building or destroying
+
+env:
+  AWS_REGION: us-east-1
+  CI_ROLE: arn:aws:iam::870342665742:role/github-eks-platform
+  TF_IN_AUTOMATION: "1"
+  BUILD: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+
+jobs:
+  platform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+
+      - name: Validate Terraform and CloudFormation
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false >/dev/null && terraform validate
+          pipx run cfn-lint ../cloudformation/observability.yaml && echo "cfn-lint: observability.yaml is valid"
+
+      - name: Sign in to AWS with OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.CI_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform plan
+        run: |
+          terraform init -input=false -reconfigure >/dev/null
+          terraform plan -input=false -lock=false | tail -5
+
+      # ---------- main only: build the cake from the bottom up ----------
+
+      - name: "Layer 1: network"
+        id: network
+        if: env.BUILD == 'true'
+        run: terraform apply -input=false -auto-approve -target=module.network | tail -2
+
+      - name: "Layer 2: EKS cluster and nodes"
+        if: env.BUILD == 'true'
+        run: |
+          terraform apply -input=false -auto-approve -target=module.eks | tail -2
+          aws eks update-kubeconfig --name eks-platform >/dev/null
+          kubectl get nodes -o wide
+
+      - name: "Layer 3: load balancer and Auto Scaling"
+        if: env.BUILD == 'true'
+        run: |
+          terraform apply -input=false -auto-approve -target=module.edge | tail -2
+          echo "Auto Scaling group: $(terraform output -raw asg_name)"
+
+      - name: "Layer 4: workloads"
+        if: env.BUILD == 'true'
+        run: |
+          kubectl apply -f ../k8s/app.yaml
+          kubectl rollout status deploy/hello-platform --timeout=180s
+          kubectl get pods -o wide
+
+      - name: "Layer 5: observability"
+        if: env.BUILD == 'true'
+        run: |
+          terraform apply -input=false -auto-approve | tail -2
+          terraform plan -input=false -detailed-exitcode >/dev/null && echo "Everything matches the code: no changes left"
+
+      - name: Verify the platform
+        if: env.BUILD == 'true'
+        run: bash ../scripts/verify.sh
+
+      # Always runs once building started, even after a failure, so nothing is left costing money
+      - name: Destroy the platform
+        if: always() && steps.network.outcome != 'skipped' && env.BUILD == 'true'
+        run: |
+          kubectl delete -f ../k8s/app.yaml --ignore-not-found --wait=false || true
+          terraform destroy -input=false -auto-approve | tail -2

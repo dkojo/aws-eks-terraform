@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudWatch dashboard and alarms for the EKS platform (load balancer, targets, nodes, cluster)
+
+Parameters:
+  ClusterName: { Type: String }
+  AlbArnSuffix: { Type: String }
+  TgArnSuffix: { Type: String }
+  AsgName: { Type: String }
+
+Resources:
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${ClusterName}-platform"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {"type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+             "properties": {"title": "Load balancer requests and 5xx", "region": "${AWS::Region}", "stat": "Sum", "period": 60,
+               "metrics": [["AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${AlbArnSuffix}"],
+                           [".", "HTTPCode_Target_5XX_Count", ".", "."]]}},
+            {"type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+             "properties": {"title": "Healthy nodes behind the load balancer", "region": "${AWS::Region}", "stat": "Minimum", "period": 60,
+               "metrics": [["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", "${TgArnSuffix}", "LoadBalancer", "${AlbArnSuffix}"]]}},
+            {"type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+             "properties": {"title": "Node CPU (Auto Scaling group)", "region": "${AWS::Region}", "stat": "Average", "period": 60,
+               "metrics": [["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${AsgName}"]]}},
+            {"type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+             "properties": {"title": "Cluster pods (Container Insights)", "region": "${AWS::Region}", "stat": "Average", "period": 60,
+               "metrics": [["ContainerInsights", "cluster_number_of_running_pods", "ClusterName", "${ClusterName}"]]}}
+          ]
+        }
+
+  UnhealthyTargetsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ClusterName}-unhealthy-targets"
+      AlarmDescription: A node behind the load balancer is failing its health check
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - { Name: TargetGroup, Value: !Ref TgArnSuffix }
+        - { Name: LoadBalancer, Value: !Ref AlbArnSuffix }
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  Target5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ClusterName}-target-5xx"
+      AlarmDescription: The app is returning server errors
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - { Name: LoadBalancer, Value: !Ref AlbArnSuffix }
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  NodeCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ClusterName}-node-cpu"
+      AlarmDescription: Nodes are running hot
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - { Name: AutoScalingGroupName, Value: !Ref AsgName }
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  DashboardName:
+    Value: !Ref Dashboard
