@@ -37,10 +37,10 @@ flowchart BT
 - The Container Insights add-on is `ACTIVE`.
 - The dashboard and all three alarms exist.
 
-## See a broken layer stop the build
+## See a broken template stop the run
 
-Open the pull request **demo/break-the-edge**. It points the load balancer's target group at the wrong NodePort.
-`terraform plan` is happy, because the code is valid. Merged, the platform would build, but **Verify** would find no healthy targets. On the pull request itself the plan shows the change, which is the review gate.
+Open the pull request **demo/broken-alarm**. It gives one CloudWatch alarm in the CloudFormation template an invalid comparison operator.
+**Validate** fails on `cfn-lint`, so the run stops before anything is planned, let alone built or paid for.
 
 ## Set it up in your own account
 
